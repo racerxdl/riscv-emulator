@@ -1,0 +1,4 @@
+testdata/*.elf
+testdata/*.o
+testdata/*.bin
+.idea
