@@ -47,7 +47,7 @@ func (b BusMap) String() string {
 	} else {
 		rw += "-"
 	}
-	return fmt.Sprintf(busMapLineFormat, b.Name, b.Start, b.End, rw)
+	return fmt.Sprintf(busMapLineFormat, b.Name, b.Start, b.End-1, rw)
 }
 
 // In returns true in case of the specified address to be inside that map

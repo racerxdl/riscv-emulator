@@ -3,6 +3,9 @@ package core
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"path"
+	"strings"
 )
 
 const insOpcodeMask = 0x00_00_00_7f // Bits 0 to 6
@@ -26,6 +29,8 @@ const insImmTypeJ2 = 0x00_0F_F8_00
 const insImmTypeJ3 = 0x80_00_00_00
 
 func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
+	//rv32.log.Debugf("DISM: %s", disasm.Disasm(rv32.pc-4, ins))
+	var err error
 	// Splice the instruction
 	opcode := ins & insOpcodeMask
 	rd := (ins & insRdMask) >> 7
@@ -35,7 +40,7 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 	funct7 := (ins & insFunct7Mask) >> 25
 
 	immTypeI := (ins & insImmTypeI) >> 20
-	immTypeS := ((ins & insImmTypeS0) >> 7) + ((ins & insImmTypeS1) >> 25)
+	immTypeS := ((ins & insImmTypeS0) >> 7) + ((ins & insImmTypeS1) >> 20)
 	immTypeB := ((ins & insImmTypeB0) >> 7) + ((ins & insImmTypeB1) >> 20) + ((ins & insImmTypeB2) << 4) + ((ins & insImmTypeB3) >> 19)
 	immTypeU := ins & insImmTypeU
 	immTypeJ := ((ins & insImmTypeJ0) >> 20) + ((ins & insImmTypeJ1) >> 9) + (ins & insImmTypeJ2) + ((ins & insImmTypeJ3) >> 11)
@@ -66,14 +71,14 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 
 	if opcode == 0b0010011 { // addi, slti, sltiu, xori, ori, andi, slli, srli, srai
 		// imm[11:0]     rs1 000 rd 0010011 I addi
+		// 0000000 shamt rs1 001 rd 0010011 I slli
 		// imm[11:0]     rs1 010 rd 0010011 I slti
 		// imm[11:0]     rs1 011 rd 0010011 I sltiu
 		// imm[11:0]     rs1 100 rd 0010011 I xori
-		// imm[11:0]     rs1 110 rd 0010011 I ori
-		// imm[11:0]     rs1 111 rd 0010011 I andi
-		// 0000000 shamt rs1 001 rd 0010011 I slli
 		// 0000000 shamt rs1 101 rd 0010011 I srli
 		// 0100000 shamt rs1 101 rd 0010011 I srai
+		// imm[11:0]     rs1 110 rd 0010011 I ori
+		// imm[11:0]     rs1 111 rd 0010011 I andi
 		aluOp := aluINVALID
 
 		switch funct3 {
@@ -115,7 +120,9 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 		//0100000 rs2 rs1 101 rd 0110011 R sra
 		//0000000 rs2 rs1 110 rd 0110011 R or
 		//0000000 rs2 rs1 111 rd 0110011 R and
-
+		if funct7&^32 != 0 {
+			return fmt.Errorf("invalid instruction %08x at pc = %08x", ins, rv32.pc-4)
+		}
 		aluOp := aluINVALID
 		switch funct3 {
 		case 0: // add / sub
@@ -155,7 +162,7 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 		case 1:
 			aluOp = aluNotEqual
 		case 2, 3:
-			return fmt.Errorf("invalid instruction %08x", ins)
+			return fmt.Errorf("invalid instruction %08x at pc = %08x", ins, rv32.pc-4)
 		case 4:
 			aluOp = aluLesserThanSigned
 		case 5:
@@ -185,14 +192,16 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 	}
 
 	if opcode == 0b1101111 { // jal
-		rv32.Registers.SetInteger(rd, rv32.GetPC())
+		t := rv32.GetPC()
+		rv32.Registers.SetInteger(rd, t)
 		rv32.AddPC(int32(imm) - 4)
 		return nil
 	}
 
 	if opcode == 0b1100111 { // jalr
-		rv32.Registers.SetInteger(rd, rv32.GetPC()+4)
-		newPC := rv32.alu(aluADD, rs1Val, imm) &^ 1
+		t := rv32.GetPC()
+		rv32.Registers.SetInteger(rd, t)
+		newPC := rv32.alu(aluADD, rs1Val, imm) &^ uint32(1)
 		rv32.SetPC(newPC)
 		return nil
 	}
@@ -201,13 +210,17 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 		numBytes := funct3 & 3
 		data := uint32(0)
 
+		if funct3 > 6 {
+			return fmt.Errorf("invalid instruction %08x at pc = %08x", ins, rv32.pc-4)
+		}
+
 		addr := rv32.alu(aluADD, rs1Val, imm)
 
 		switch numBytes {
 		case 0:
 			b, err := rv32.Bus.ReadByte(ctx, addr)
 			if err != nil {
-				return err
+				return fmt.Errorf("bus error at %08x: %s", rv32.pc-4, err)
 			}
 			data = uint32(b)
 			if funct3&4 == 0 { // Sign Extend
@@ -216,7 +229,7 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 		case 1:
 			b, err := rv32.Bus.ReadShort(ctx, addr)
 			if err != nil {
-				return err
+				return fmt.Errorf("bus error at %08x: %s", rv32.pc-4, err)
 			}
 			data = uint32(b)
 			if funct3&4 == 0 { // Sign Extend
@@ -225,7 +238,7 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 		case 2:
 			b, err := rv32.Bus.ReadWord(ctx, addr)
 			if err != nil {
-				return err
+				return fmt.Errorf("bus error at %08x: %s", rv32.pc-4, err)
 			}
 			data = b
 		}
@@ -236,27 +249,55 @@ func (rv32 *RISCV) runInstruction(ctx context.Context, ins uint32) error {
 
 	if opcode == 0b0100011 { // sw, sh, sb
 		numBytes := funct3 & 3
+
+		if funct3 > 3 {
+			return fmt.Errorf("invalid instruction %08x at pc = %08x", ins, rv32.pc-4)
+		}
+
 		addr := rv32.alu(aluADD, rs1Val, imm)
 		switch numBytes {
 		case 0:
-			return rv32.Bus.WriteByte(ctx, addr, byte(rs2Val&0xFF))
+			err = rv32.Bus.WriteByte(ctx, addr, byte(rs2Val&0xFF))
 		case 1:
-			return rv32.Bus.WriteShort(ctx, addr, uint16(rs2Val&0xFFFF))
+			err = rv32.Bus.WriteShort(ctx, addr, uint16(rs2Val&0xFFFF))
 		case 2:
-			return rv32.Bus.WriteWord(ctx, addr, rs2Val)
+			err = rv32.Bus.WriteWord(ctx, addr, rs2Val)
 		}
+		if err != nil {
+			err = fmt.Errorf("bus error at %08x: %s", rv32.pc-4, err)
+		}
+		return err
 	}
 
 	if opcode == 0b1110011 {
 		if funct3 == 0 { // ecall / ebreak
-			rv32.log.Info("ecall/ebreak not implemented")
+			rv32.log.Infof("ecall/ebreak not implemented at pc = %08x", rv32.pc-4)
 			// TODO
 			return nil
 		}
 		// CSR
-		rv32.log.Info("CSR not implemented")
+		rv32.log.Infof("CSR not implemented at pc = %08x", rv32.pc-4)
 		return nil
 	}
 
-	return fmt.Errorf("invalid instruction %08x", ins)
+	return fmt.Errorf("invalid instruction %08x at pc = %08x", ins, rv32.pc-4)
+}
+
+func Addr2Line(addr uint32) string {
+
+	//fmt.Println("/home/lucas/.local/xPacks/@xpack-dev-tools/riscv-none-embed-gcc/10.1.0-1.1.1/.content/bin//riscv-none-embed-addr2line", "-f", "-e", "/media/lucas/ELTNEXT/Works2/doom_riscv/src/riscv/doom-riscv.elf", fmt.Sprintf("0x%08x", addr))
+	cmd := exec.Command("/home/lucas/.local/xPacks/@xpack-dev-tools/riscv-none-embed-gcc/10.1.0-1.1.1/.content/bin//riscv-none-embed-addr2line", "-f", "-e", "/media/lucas/ELTNEXT/Works2/doom_riscv/src/riscv/doom-riscv.elf", fmt.Sprintf("0x%08x", addr))
+	//stdout, _ := cmd.StdoutPipe()
+	//err := cmd.Run()
+	//if err != nil {
+	//	out, _ := cmd.CombinedOutput()
+	//	fmt.Println(string(out))
+	//	panic(err)
+	//}
+	out, _ := cmd.Output()
+	lines := strings.Split(string(out), "\n")
+	filename_line := strings.Split(lines[1], ":")
+	funcname := lines[0]
+	filename := path.Base(filename_line[0])
+	return fmt.Sprintf("%s:%s (%s)", filename, filename_line[1], funcname)
 }

@@ -213,8 +213,8 @@ func TestCPU_JALJALR(t *testing.T) {
 	if cpu.Registers.integers[1] != 0x18 {
 		t.Errorf("JAL/JALR: Expected %02d to be %08x but got %08x", 1, 0x18, cpu.Registers.integers[1])
 	}
-	if cpu.Registers.integers[2] != 0x30 {
-		t.Errorf("JAL/JALR: Expected %02d to be %08x but got %08x", 2, 0x30, cpu.Registers.integers[2])
+	if cpu.Registers.integers[2] != 0x2c {
+		t.Errorf("JAL/JALR: Expected %02d to be %08x but got %08x", 2, 0x2c, cpu.Registers.integers[2])
 	}
 }
 

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 )
 
 // ReadByte performs a byte read in the bus
@@ -37,13 +38,25 @@ func (b *Bus) WriteWord(ctx context.Context, address uint32, value uint32) error
 	return b.Write(ctx, address, value, 15)
 }
 
-const busMapHeadFormat = "%20s %08s %08s %02s\n"
+const busMapHeadFormat = "%20s %8s %8s %2s\n"
 
 // String returns all current maps in human readable format
 func (b *Bus) String() string {
+	var mapNames []string
 	result := fmt.Sprintf(busMapHeadFormat, "Name", "Start", "End", "RW")
-	for _, m := range b.handlers {
-		result += "\t" + m.String() + "\n"
+	for n := range b.handlers {
+		mapNames = append(mapNames, n)
+	}
+
+	sort.Slice(mapNames, func(i, j int) bool {
+		a1 := mapNames[i]
+		b1 := mapNames[j]
+		return b.handlers[a1].Start < b.handlers[b1].Start
+	})
+
+	for _, n := range mapNames {
+		m := b.handlers[n]
+		result += m.String() + "\n"
 	}
 	return result
 }
